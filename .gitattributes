@@ -1,0 +1,17 @@
+# 换行符统一策略
+#   - 仓库内一律 LF（Linux 容器 / GitHub Actions 与 Windows 工作区不再互相污染）
+#   - Windows 批处理 / PowerShell 例外保留 CRLF（CRLF 缺失会导致脚本报错）
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
