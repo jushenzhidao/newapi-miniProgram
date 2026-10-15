@@ -1,0 +1,26 @@
+# ===== 密钥 / 环境（绝不进版本库）=====
+.env
+.env.*
+!.env.example
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ===== 运行时数据 =====
+*.db
+*.sqlite3
+data/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+
+# ===== 本地产物 =====
+.workbuddy/

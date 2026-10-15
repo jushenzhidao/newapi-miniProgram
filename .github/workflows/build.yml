@@ -1,0 +1,51 @@
+name: build-and-push
+
+# 推送 main / tag v* 时：构建镜像并推送到 GHCR。
+# 镜像 tag：
+#   - sha-<commit前7位>  生产钉这个（不可变，回滚精确）
+#   - latest             便于回滚/临时测试；生产服务器请用 sha-xxx
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write   # 推 GHCR 必须
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # Actions 自动提供，无需自建
+
+      - name: Short SHA (前 7 位，对齐 flovart 的 sha-xxxxxxx 写法)
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/${{ github.repository }}:sha-${{ steps.sha.outputs.short }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

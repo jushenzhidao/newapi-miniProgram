@@ -1,0 +1,173 @@
+# wechat-tools-bff 服务器直拉镜像版（生产部署）
+#
+# 与仓库 docker-compose.yml（build 模式）的区别：
+#   - 不构建，直接引用 GHCR 镜像 ghcr.io/jushenzhidao/wechat-tools-bff
+#   - 升级 = 只改下面 bff/worker/beat 的 image 行 tag（sha-<commit前7位>）
+#   - 私有镜像需先在宿主机登录：
+#       echo <GITHUB_TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
+#
+# 安全语义（对齐 flovart-bff 生产 compose）：
+#   - 只绑回环：生产 TLS 由宿主机 Nginx/Caddy 终止，防绕过反代的明文旁路
+#   - read_only rootfs + tmpfs /tmp + cap_drop ALL + no-new-privileges
+#   - healthcheck 用 python 探针（镜像刻意不装 curl）
+#
+# 升级步骤：改 image tag →
+#   docker compose -f docker-compose.server.yml pull bff worker beat
+#   docker compose -f docker-compose.server.yml up -d
+#
+# 2026-10-15：含 apps 表自动注册（.env 填 BOOTSTRAP_APP_*，BFF 启动自举，免手工 SQL）。
+#   ⚠️ 若你的 GitHub owner 不是 jushenzhidao，把下方镜像 owner 改成实际值
+#      （与 Actions 里 ghcr.io/${{ github.repository }} 的 owner 一致）。
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: wtb-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 必须设置，用 openssl rand -hex 16 生成}
+      MYSQL_DATABASE: wechat_tools
+      TZ: Asia/Shanghai
+    command: --default-time-zone=+08:00
+    volumes:
+      - wtb-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  redis:
+    image: redis:7-alpine
+    container_name: wtb-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - wtb-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ============ BFF API ============
+  bff:
+    # ⭐ 升级只改这一行：tag = GitHub Actions 产物 sha-<commit前7位>
+    #   实际 tag 以 Actions 运行日志 / GHCR 包页面为准；生产钉 sha tag 别用 latest。
+    image: ghcr.io/jushenzhidao/wechat-tools-bff:sha-0000000
+    container_name: ${WTB_BFF_CONTAINER_NAME:-wtb-bff}
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --forwarded-allow-ips=127.0.0.1
+    env_file: .env
+    environment:
+      # 容器内网络指向 compose 服务名；.env 里的 DATABASE_URL 被这里覆盖
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/wechat_tools?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 管理员 PAT 落盘缓存 + 自举幂等账本，都在 /data 卷（read_only rootfs 下必须指到卷）
+      NEWAPI_ADMIN_CRED_FILE: /data/admin_cred.json
+    # 只绑回环：生产 TLS 由宿主机 Nginx/Caddy 终止
+    ports:
+      - "127.0.0.1:${WTB_PORT:-8010}:8000"
+    volumes:
+      - wtb-data:/data
+      - wtb-uploads:/srv/uploads
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # 用 python 而非 curl：镜像刻意没装 curl（少一个依赖）
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+  # ============ Celery worker（抠图/视频任务消费 + 补偿） ============
+  worker:
+    image: ghcr.io/jushenzhidao/wechat-tools-bff:sha-0000000
+    container_name: ${WTB_WORKER_CONTAINER_NAME:-wtb-worker}
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/wechat_tools?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      NEWAPI_ADMIN_CRED_FILE: /data/admin_cred.json
+    volumes:
+      - wtb-data:/data
+      - wtb-uploads:/srv/uploads
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+  # ============ Celery beat（quota_grants 补偿每分钟 + 日终对账） ============
+  beat:
+    image: ghcr.io/jushenzhidao/wechat-tools-bff:sha-0000000
+    container_name: ${WTB_BEAT_CONTAINER_NAME:-wtb-beat}
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/wechat_tools?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      NEWAPI_ADMIN_CRED_FILE: /data/admin_cred.json
+    depends_on:
+      redis: { condition: service_healthy }
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  # 显式绝对名，不带 project 前缀 —— 改 project name 也不会「数据卷凭空消失」
+  wtb-mysql-data:
+    name: wtb-mysql-data
+  wtb-redis-data:
+    name: wtb-redis-data
+  wtb-data:
+    name: wtb-data
+  wtb-uploads:
+    name: wtb-uploads

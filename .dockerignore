@@ -1,0 +1,33 @@
+# 依赖与虚拟环境
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 版本控制与 CI
+.git/
+.github/
+.gitignore
+
+# 本地数据 / 密钥 / 日志（绝不进镜像）
+.env
+.env.*
+data/
+*.db
+*.sqlite3
+*.log
+admin_cred.json
+signup_bonus.json
+
+# 测试与临时产物
+test_*.py
+*_test.py
+.mypy_cache/
+.ruff_cache/
+
+# 编辑器 / OS
+.idea/
+.vscode/
+.DS_Store

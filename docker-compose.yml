@@ -1,0 +1,101 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: wtb-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: wechat_tools
+      TZ: Asia/Shanghai
+    command: --default-time-zone=+08:00
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: wtb-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # BFF API 服务
+  bff:
+    build: .
+    image: wechat-tools-bff:latest
+    container_name: wtb-bff
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      # 容器内网络指向 compose 服务名
+      DATABASE_URL: mysql+pymysql://root:root@mysql:3306/wechat_tools?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    # 宿主机 8000 被其他项目占用，映射到 8010；前端 dev 配置同步指向 127.0.0.1:8010
+    ports:
+      - "8010:8000"
+    volumes:
+      - uploads:/srv/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Celery worker（抠图/视频任务消费 + 补偿任务执行）
+  worker:
+    build: .
+    image: wechat-tools-bff:latest
+    container_name: wtb-worker
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://root:root@mysql:3306/wechat_tools?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    volumes:
+      - uploads:/srv/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Celery beat（add_quota 补偿每分钟 + 每日对账 03:00）
+  beat:
+    build: .
+    image: wechat-tools-bff:latest
+    container_name: wtb-beat
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql+pymysql://root:root@mysql:3306/wechat_tools?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  redis-data:
+  uploads:
