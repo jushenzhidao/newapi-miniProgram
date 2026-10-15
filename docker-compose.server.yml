@@ -81,7 +81,7 @@ services:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
-      # 用 python 而非 curl：镜像刻意没装 curl（少一个依赖）
+      # 用 python 探针（不依赖 curl，镜像里有没有 curl 都能探活）
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"]
       interval: 30s

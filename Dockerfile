@@ -1,7 +1,6 @@
 FROM python:3.12-slim
 
-# mysqlclient 替代 pymysql 需要 gcc；用 pymysql 纯 Python 驱动则不需要。
-# 本镜像同时装 curl 供健康检查。
+# curl：便于进容器手动排查（healthcheck 走 python 探针，不依赖 curl）。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
@@ -16,12 +15,14 @@ ENV UV_SYSTEM_PYTHON=1 \
 
 WORKDIR /srv
 
-# 先装依赖（层缓存）：只拷依赖清单
+# ⚠️ 顺序关键：pyproject.toml 里 hatchling 声明 packages = ["app"]，
+#    构 wheel 时 app/ 必须已存在，否则 uv pip install 直接失败。
+#    所以先 COPY app，再装依赖。
 COPY pyproject.toml ./
-RUN uv pip install --system -e . || uv pip install --system .
-
-# 再拷代码
 COPY app ./app
+RUN uv pip install --system -e .
+
+# 其余运行期资源（放依赖层之后：改 alembic 不会触发重装依赖）
 COPY alembic ./alembic
 COPY alembic.ini ./
 

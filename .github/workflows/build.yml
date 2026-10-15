@@ -1,9 +1,20 @@
 name: build-and-push
 
 # 推送 main / tag v* 时：构建镜像并推送到 GHCR。
+#
+# 镜像名固定为 ghcr.io/jushenzhidao/wechat-tools-bff
+#   （与 docker-compose.server.yml / README 口径一致）
+#   ⚠️ 刻意【不】用 ${{ github.repository }}：
+#      本仓库名为 mpAGI-miniprogram（含大写），而 GHCR 要求镜像路径必须全小写，
+#      直接引用仓库名会报：
+#        invalid tag ".../mpAGI-miniprogram:sha-xxx": repository name must be lowercase
+#
 # 镜像 tag：
 #   - sha-<commit前7位>  生产钉这个（不可变，回滚精确）
 #   - latest             便于回滚/临时测试；生产服务器请用 sha-xxx
+env:
+  IMAGE_NAME: ghcr.io/jushenzhidao/wechat-tools-bff
+
 on:
   push:
     branches: [main]
@@ -45,7 +56,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ github.repository }}:sha-${{ steps.sha.outputs.short }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ env.IMAGE_NAME }}:sha-${{ steps.sha.outputs.short }}
+            ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
